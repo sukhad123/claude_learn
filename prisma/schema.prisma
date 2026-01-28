@@ -1,0 +1,26 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Question {
+  id        String      @id @default(cuid())
+  text      String
+  category  String      // behavioral, technical, general
+  createdAt DateTime    @default(now())
+  recordings Recording[]
+}
+
+model Recording {
+  id         String   @id @default(cuid())
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id])
+  transcript String
+  audioUrl   String?  // Path to stored audio file
+  duration   Int?     // Duration in seconds
+  createdAt  DateTime @default(now())
+}
