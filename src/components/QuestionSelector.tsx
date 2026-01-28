@@ -22,7 +22,7 @@ interface QuestionSelectorProps {
 }
 
 const categories = [
-  { id: 'behavioral', label: 'Behavioral', icon: PsychologyIcon, color: '#2196f3' },
+  { id: 'behavioral', label: 'Behavioral', icon: PsychologyIcon, color: '#576b7cff' },
   { id: 'technical', label: 'Technical', icon: CodeIcon, color: '#4caf50' },
   { id: 'general', label: 'General', icon: PersonIcon, color: '#9c27b0' },
 ];
@@ -75,7 +75,7 @@ export default function QuestionSelector({ onSelectQuestion }: QuestionSelectorP
                 <CardActionArea onClick={() => setSelectedCategory(cat.id)}>
                   <CardContent sx={{ textAlign: 'center', py: 3 }}>
                     <Icon sx={{ fontSize: 40, mb: 1 }} />
-                    <Typography variant="h6" fontWeight="bold">
+                    <Typography variant="h6" >
                       {cat.label}
                     </Typography>
                   </CardContent>

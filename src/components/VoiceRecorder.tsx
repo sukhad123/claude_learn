@@ -10,7 +10,6 @@ import {
   Chip,
   Alert,
   Paper,
-  IconButton,
   CircularProgress,
   Divider,
 } from '@mui/material';
@@ -18,11 +17,11 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
 import PauseIcon from '@mui/icons-material/Pause';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import StopIcon from '@mui/icons-material/Stop';
-import SaveIcon from '@mui/icons-material/Save';
 import DeleteIcon from '@mui/icons-material/Delete';
 import DescriptionIcon from '@mui/icons-material/Description';
-import { Question } from '@/types';
+import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
+import { Question, AIFeedback, PronunciationIssue, AnalysisResponse } from '@/types';
+import FeedbackModal from './FeedbackModal';
 
 interface VoiceRecorderProps {
   question: Question;
@@ -37,7 +36,13 @@ export default function VoiceRecorder({ question, onComplete, onBack }: VoiceRec
   const [interimTranscript, setInterimTranscript] = useState('');
   const [duration, setDuration] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [aiFeedback, setAiFeedback] = useState<AIFeedback | null>(null);
+  const [aiTranscript, setAiTranscript] = useState('');
+  const [pronunciationIssues, setPronunciationIssues] = useState<PronunciationIssue[]>([]);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -182,34 +187,77 @@ export default function VoiceRecorder({ question, onComplete, onBack }: VoiceRec
 
   const saveRecording = async () => {
     setIsSaving(true);
+    setIsAnalyzing(true);
     const audioBlob = await stopRecording();
     setIsRecording(false);
 
-    const formData = new FormData();
-    formData.append('questionId', question.id);
-    formData.append('transcript', transcript + interimTranscript);
-    formData.append('duration', duration.toString());
-    if (audioBlob) {
-      formData.append('audio', audioBlob, 'recording.webm');
+    if (!audioBlob) {
+      setError('No audio recorded. Please try again.');
+      setIsSaving(false);
+      setIsAnalyzing(false);
+      return;
     }
 
+    // Create audio URL for playback
+    const recordedAudioUrl = URL.createObjectURL(audioBlob);
+    setAudioUrl(recordedAudioUrl);
+
     try {
-      const response = await fetch('/api/recordings', {
+      // Step 1: Analyze with AI (Whisper + GPT-4)
+      const analyzeFormData = new FormData();
+      analyzeFormData.append('audio', audioBlob, 'recording.webm');
+      analyzeFormData.append('question', question.text);
+      analyzeFormData.append('category', question.category);
+
+      const analyzeResponse = await fetch('/api/analyze-answer', {
         method: 'POST',
-        body: formData,
+        body: analyzeFormData,
       });
 
-      if (response.ok) {
-        onComplete();
-      } else {
-        setError('Failed to save recording. Please try again.');
+      if (!analyzeResponse.ok) {
+        throw new Error('Failed to analyze answer');
+      }
+
+      const analysisData: AnalysisResponse = await analyzeResponse.json();
+
+      setAiFeedback(analysisData.analysis);
+      setAiTranscript(analysisData.transcript);
+      setPronunciationIssues(analysisData.analysis.pronunciationIssues || []);
+      setIsAnalyzing(false);
+      setShowFeedback(true);
+
+      // Step 2: Save recording to database
+      const saveFormData = new FormData();
+      saveFormData.append('questionId', question.id);
+      saveFormData.append('transcript', analysisData.transcript);
+      saveFormData.append('duration', duration.toString());
+      saveFormData.append('audio', audioBlob, 'recording.webm');
+
+      const saveResponse = await fetch('/api/recordings', {
+        method: 'POST',
+        body: saveFormData,
+      });
+
+      if (!saveResponse.ok) {
+        console.error('Failed to save recording to database');
       }
     } catch (err) {
-      setError('Failed to save recording. Please try again.');
-      console.error('Error saving recording:', err);
+      setError('Failed to analyze recording. Please try again.');
+      console.error('Error analyzing recording:', err);
+      setIsAnalyzing(false);
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const handleCloseFeedback = () => {
+    setShowFeedback(false);
+    // Clean up audio URL to free memory
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+      setAudioUrl(null);
+    }
+    onComplete();
   };
 
   const discardRecording = async () => {
@@ -317,7 +365,6 @@ export default function VoiceRecorder({ question, onComplete, onBack }: VoiceRec
               {!isRecording ? (
                 <Button
                   variant="contained"
-                  color="error"
                   startIcon={<FiberManualRecordIcon />}
                   onClick={startRecording}
                   size="large"
@@ -356,11 +403,17 @@ export default function VoiceRecorder({ question, onComplete, onBack }: VoiceRec
                   <Button
                     variant="contained"
                     color="primary"
-                    startIcon={isSaving ? <CircularProgress size={20} color="inherit" /> : <SaveIcon />}
+                    startIcon={
+                      isSaving ? (
+                        <CircularProgress size={20} color="inherit" />
+                      ) : (
+                        <AutoAwesomeIcon />
+                      )
+                    }
                     onClick={saveRecording}
                     disabled={isSaving}
                   >
-                    {isSaving ? 'Saving...' : 'Save'}
+                    {isAnalyzing ? 'Analyzing with AI...' : isSaving ? 'Saving...' : 'Save & Get Feedback'}
                   </Button>
                 </>
               )}
@@ -382,7 +435,7 @@ export default function VoiceRecorder({ question, onComplete, onBack }: VoiceRec
                 minHeight: 200,
                 maxHeight: 400,
                 overflow: 'auto',
-                bgcolor: 'grey.50',
+                bgcolor: 'black',
               }}
             >
               {transcript || interimTranscript ? (
@@ -420,6 +473,43 @@ export default function VoiceRecorder({ question, onComplete, onBack }: VoiceRec
           </Typography>
         </Paper>
       )}
+
+      {/* AI Analyzing Overlay */}
+      {isAnalyzing && (
+        <Paper
+          sx={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            bgcolor: 'rgba(0,0,0,0.8)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+          }}
+        >
+          <CircularProgress size={60} sx={{ mb: 3 }} />
+          <Typography variant="h5" gutterBottom>
+            Analyzing Your Answer
+          </Typography>
+          <Typography variant="body1" color="text.secondary">
+            Using Whisper for transcription and GPT-4 for feedback...
+          </Typography>
+        </Paper>
+      )}
+
+      {/* Feedback Modal */}
+      <FeedbackModal
+        open={showFeedback}
+        onClose={handleCloseFeedback}
+        feedback={aiFeedback}
+        transcript={aiTranscript}
+        pronunciationIssues={pronunciationIssues}
+        audioUrl={audioUrl}
+      />
     </Box>
   );
 }

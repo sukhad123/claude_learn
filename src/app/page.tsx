@@ -40,8 +40,26 @@ export default function Home() {
   };
 
   return (
-    <Box sx={{ minHeight: '100vh', bgcolor: 'grey.100' }}>
-      <AppBar position="static" elevation={1}>
+    <Box sx={{ minHeight: '100vh',   }}>
+
+      {/**Navbar */}
+     <AppBar
+  position="fixed"
+  elevation={0}
+  className="
+    !top-4
+    !left-1/2
+    !-translate-x-1/2
+    !w-[92%]
+    md:!w-[85%]
+    max-w-6xl
+    !rounded-2xl
+    backdrop-blur-md
+    shadow-lg
+    border border-white/20
+  "
+>
+
         <Toolbar>
           <IconButton
             edge="start"
@@ -57,20 +75,21 @@ export default function Home() {
           <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
             Voice Interview
           </Typography>
-          <Button
-            color="inherit"
+          <div className='flex flex-row gap-4'>
+             <Button
+            color="success"
             startIcon={<HomeIcon />}
+            variant='contained'
             onClick={() => {
               setCurrentView('home');
               setSelectedQuestion(null);
             }}
-            sx={{
-              bgcolor: currentView === 'home' ? 'rgba(255,255,255,0.1)' : 'transparent',
-            }}
+          
           >
             Practice
           </Button>
-          <Button
+          {/**No history for now */}
+          {/* <Button
             color="inherit"
             startIcon={<HistoryIcon />}
             onClick={() => setCurrentView('history')}
@@ -79,7 +98,9 @@ export default function Home() {
             }}
           >
             History
-          </Button>
+          </Button> */}
+          </div>
+         
         </Toolbar>
       </AppBar>
 
