@@ -1,9 +1,19 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+// Helper to calculate speaking stats from word timestamps
+function calculateSpeakingStats(words: Array<{ word: string; start: number; end: number }>) {
+  if (words.length < 2) return { wordsPerMinute: 0, totalDuration: 0 };
+
+  const totalDuration = words[words.length - 1].end - words[0].start;
+  const wordsPerMinute = totalDuration > 0 ? Math.round((words.length / totalDuration) * 60) : 0;
+
+  return { wordsPerMinute, totalDuration: Math.round(totalDuration) };
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -13,9 +23,9 @@ export async function POST(request: NextRequest) {
     const questionCategory = formData.get('category') as string;
 
     if (!audioFile || !questionText) {
-      return NextResponse.json(
-        { error: 'Audio file and question are required' },
-        { status: 400 }
+      return new Response(
+        JSON.stringify({ error: 'Audio file and question are required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
@@ -30,69 +40,47 @@ export async function POST(request: NextRequest) {
 
     const transcript = transcriptionResponse.text;
     const words = transcriptionResponse.words || [];
+    const speakingStats = calculateSpeakingStats(words);
 
-    // Step 2: Analyze the answer using GPT-4
-    const analysisPrompt = `You are an expert interview coach. Analyze the following interview answer and provide detailed feedback.
+    // Step 2: Stream the analysis using GPT-4o-mini
+    const analysisPrompt = `Analyze this interview answer and provide feedback.
 
-**Interview Question (${questionCategory}):**
-${questionText}
+**Question (${questionCategory}):** ${questionText}
 
-**Candidate's Answer (Transcript):**
-${transcript}
+**Answer:** ${transcript}
 
-**Word-level data from speech recognition:**
-${JSON.stringify(words.map(w => ({ word: w.word, start: w.start, end: w.end })), null, 2)}
+**Speaking stats:** ${speakingStats.wordsPerMinute} words/min, ${speakingStats.totalDuration}s duration
 
-Please provide your analysis in the following JSON format:
+Respond with JSON:
 {
-  "overallRating": <number 1-10>,
+  "overallRating": <1-10>,
   "ratingBreakdown": {
-    "relevance": <number 1-10>,
-    "clarity": <number 1-10>,
-    "structure": <number 1-10>,
-    "confidence": <number 1-10>,
-    "completeness": <number 1-10>
+    "relevance": <1-10>,
+    "clarity": <1-10>,
+    "structure": <1-10>,
+    "confidence": <1-10>,
+    "completeness": <1-10>
   },
   "starMethodAnalysis": {
-    "situation": { "present": <boolean>, "score": <number 1-10>, "feedback": "<string>" },
-    "task": { "present": <boolean>, "score": <number 1-10>, "feedback": "<string>" },
-    "action": { "present": <boolean>, "score": <number 1-10>, "feedback": "<string>" },
-    "result": { "present": <boolean>, "score": <number 1-10>, "feedback": "<string>" }
+    "situation": { "present": <bool>, "score": <1-10>, "feedback": "<string>" },
+    "task": { "present": <bool>, "score": <1-10>, "feedback": "<string>" },
+    "action": { "present": <bool>, "score": <1-10>, "feedback": "<string>" },
+    "result": { "present": <bool>, "score": <1-10>, "feedback": "<string>" }
   },
-  "strengths": ["<string>", ...],
-  "areasForImprovement": ["<string>", ...],
-  "betterAnswer": "<A well-structured example of how to answer this question more effectively>",
-  "pronunciationIssues": [
-    {
-      "word": "<the word as it appears in transcript>",
-      "issue": "<description of the pronunciation issue>",
-      "suggestion": "<how to pronounce it correctly>"
-    }
-  ],
-  "fillerWords": [
-    {
-      "word": "<filler word like um, uh, like, you know>",
-      "count": <number of occurrences>
-    }
-  ],
-  "speakingPace": "<too fast, good, too slow>",
-  "summary": "<2-3 sentence overall feedback>"
-}
+  "strengths": ["<string>"],
+  "areasForImprovement": ["<string>"],
+  "betterAnswer": "<improved answer example>",
+  "fillerWords": [{ "word": "<filler>", "count": <n> }],
+  "speakingPace": "<too fast|good|too slow>",
+  "summary": "<2-3 sentence feedback>"
+}`;
 
-Important notes for pronunciation analysis:
-- Look for words that might be unclear, mumbled, or commonly mispronounced
-- Identify filler words (um, uh, like, you know, basically, actually) and count them
-- Consider the speaking pace based on word timestamps
-- Be constructive and helpful in your feedback
-
-Return ONLY valid JSON, no markdown formatting.`;
-
-    const analysisResponse = await openai.chat.completions.create({
-      model: 'gpt-4o',
+    const stream = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
       messages: [
         {
           role: 'system',
-          content: 'You are an expert interview coach who provides detailed, constructive feedback on interview answers. Always respond with valid JSON only.',
+          content: 'You are an expert interview coach. Respond with valid JSON only.',
         },
         {
           role: 'user',
@@ -100,35 +88,68 @@ Return ONLY valid JSON, no markdown formatting.`;
         },
       ],
       temperature: 0.7,
-      max_tokens: 2000,
+      max_tokens: 1500,
+      response_format: { type: 'json_object' },
+      stream: true,
     });
 
-    const analysisText = analysisResponse.choices[0]?.message?.content || '{}';
+    // Create a streaming response
+    const encoder = new TextEncoder();
+    const readableStream = new ReadableStream({
+      async start(controller) {
+        // First, send the transcript immediately
+        controller.enqueue(encoder.encode(JSON.stringify({
+          type: 'transcript',
+          transcript,
+          words,
+          speakingStats
+        }) + '\n'));
 
-    // Parse the JSON response
-    let analysis;
-    try {
-      // Remove any markdown code blocks if present
-      const cleanedText = analysisText.replace(/```json\n?|\n?```/g, '').trim();
-      analysis = JSON.parse(cleanedText);
-    } catch {
-      console.error('Failed to parse analysis:', analysisText);
-      return NextResponse.json(
-        { error: 'Failed to parse AI analysis' },
-        { status: 500 }
-      );
-    }
+        // Then stream the analysis
+        let analysisText = '';
+        for await (const chunk of stream) {
+          const content = chunk.choices[0]?.delta?.content || '';
+          analysisText += content;
 
-    return NextResponse.json({
-      transcript,
-      words,
-      analysis,
+          // Send partial updates
+          if (content) {
+            controller.enqueue(encoder.encode(JSON.stringify({
+              type: 'analysis_chunk',
+              content
+            }) + '\n'));
+          }
+        }
+
+        // Send the final parsed analysis
+        try {
+          const analysis = JSON.parse(analysisText);
+          controller.enqueue(encoder.encode(JSON.stringify({
+            type: 'analysis_complete',
+            analysis
+          }) + '\n'));
+        } catch {
+          controller.enqueue(encoder.encode(JSON.stringify({
+            type: 'error',
+            error: 'Failed to parse analysis'
+          }) + '\n'));
+        }
+
+        controller.close();
+      },
+    });
+
+    return new Response(readableStream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
     });
   } catch (error) {
     console.error('Error analyzing answer:', error);
-    return NextResponse.json(
-      { error: 'Failed to analyze answer' },
-      { status: 500 }
+    return new Response(
+      JSON.stringify({ error: 'Failed to analyze answer' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }
 }

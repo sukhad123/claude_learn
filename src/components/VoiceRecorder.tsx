@@ -20,7 +20,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import DeleteIcon from '@mui/icons-material/Delete';
 import DescriptionIcon from '@mui/icons-material/Description';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
-import { Question, AIFeedback, PronunciationIssue, AnalysisResponse } from '@/types';
+import { Question, AIFeedback, PronunciationIssue } from '@/types';
 import FeedbackModal from './FeedbackModal';
 
 interface VoiceRecorderProps {
@@ -37,12 +37,14 @@ export default function VoiceRecorder({ question, onComplete, onBack }: VoiceRec
   const [duration, setDuration] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisStatus, setAnalysisStatus] = useState<'transcribing' | 'analyzing' | 'done'>('transcribing');
   const [error, setError] = useState<string | null>(null);
   const [showFeedback, setShowFeedback] = useState(false);
   const [aiFeedback, setAiFeedback] = useState<AIFeedback | null>(null);
   const [aiTranscript, setAiTranscript] = useState('');
   const [pronunciationIssues, setPronunciationIssues] = useState<PronunciationIssue[]>([]);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [streamingAnalysis, setStreamingAnalysis] = useState('');
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -203,11 +205,14 @@ export default function VoiceRecorder({ question, onComplete, onBack }: VoiceRec
     setAudioUrl(recordedAudioUrl);
 
     try {
-      // Step 1: Analyze with AI (Whisper + GPT-4)
+      // Analyze with AI (Whisper + GPT-4o-mini) - streaming response
       const analyzeFormData = new FormData();
       analyzeFormData.append('audio', audioBlob, 'recording.webm');
       analyzeFormData.append('question', question.text);
       analyzeFormData.append('category', question.category);
+
+      setAnalysisStatus('transcribing');
+      setStreamingAnalysis('');
 
       const analyzeResponse = await fetch('/api/analyze-answer', {
         method: 'POST',
@@ -218,29 +223,45 @@ export default function VoiceRecorder({ question, onComplete, onBack }: VoiceRec
         throw new Error('Failed to analyze answer');
       }
 
-      const analysisData: AnalysisResponse = await analyzeResponse.json();
+      // Handle streaming response
+      const reader = analyzeResponse.body?.getReader();
+      if (!reader) throw new Error('No response body');
 
-      setAiFeedback(analysisData.analysis);
-      setAiTranscript(analysisData.transcript);
-      setPronunciationIssues(analysisData.analysis.pronunciationIssues || []);
+      const decoder = new TextDecoder();
+      let analysisChunks = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const text = decoder.decode(value, { stream: true });
+        const lines = text.split('\n').filter(line => line.trim());
+
+        for (const line of lines) {
+          try {
+            const data = JSON.parse(line);
+
+            if (data.type === 'transcript') {
+              setAiTranscript(data.transcript);
+              setAnalysisStatus('analyzing');
+            } else if (data.type === 'analysis_chunk') {
+              analysisChunks += data.content;
+              setStreamingAnalysis(analysisChunks);
+            } else if (data.type === 'analysis_complete') {
+              setAiFeedback(data.analysis);
+              setPronunciationIssues(data.analysis.pronunciationIssues || []);
+              setAnalysisStatus('done');
+            } else if (data.type === 'error') {
+              throw new Error(data.error);
+            }
+          } catch (parseErr) {
+            // Skip invalid JSON lines
+          }
+        }
+      }
+
       setIsAnalyzing(false);
       setShowFeedback(true);
-
-      // Step 2: Save recording to database
-      const saveFormData = new FormData();
-      saveFormData.append('questionId', question.id);
-      saveFormData.append('transcript', analysisData.transcript);
-      saveFormData.append('duration', duration.toString());
-      saveFormData.append('audio', audioBlob, 'recording.webm');
-
-      const saveResponse = await fetch('/api/recordings', {
-        method: 'POST',
-        body: saveFormData,
-      });
-
-      if (!saveResponse.ok) {
-        console.error('Failed to save recording to database');
-      }
     } catch (err) {
       setError('Failed to analyze recording. Please try again.');
       console.error('Error analyzing recording:', err);
@@ -483,21 +504,54 @@ export default function VoiceRecorder({ question, onComplete, onBack }: VoiceRec
             left: 0,
             right: 0,
             bottom: 0,
-            bgcolor: 'rgba(0,0,0,0.8)',
+            bgcolor: 'rgba(0,0,0,0.9)',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
             zIndex: 9999,
+            p: 4,
           }}
         >
           <CircularProgress size={60} sx={{ mb: 3 }} />
           <Typography variant="h5" gutterBottom>
-            Analyzing Your Answer
+            {analysisStatus === 'transcribing' ? 'Transcribing Audio...' : 'Analyzing Your Answer...'}
           </Typography>
-          <Typography variant="body1" color="text.secondary">
-            Using Whisper for transcription and GPT-4 for feedback...
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+            {analysisStatus === 'transcribing'
+              ? 'Using Whisper AI for accurate transcription'
+              : 'GPT-4o-mini is reviewing your response'}
           </Typography>
+
+          {/* Show transcript when available */}
+          {aiTranscript && (
+            <Paper
+              sx={{
+                p: 2,
+                maxWidth: 600,
+                maxHeight: 200,
+                overflow: 'auto',
+                bgcolor: 'grey.900',
+                width: '100%',
+              }}
+            >
+              <Typography variant="caption" color="success.main" gutterBottom display="block">
+                ✓ Transcript ready
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                {aiTranscript.length > 300 ? aiTranscript.slice(0, 300) + '...' : aiTranscript}
+              </Typography>
+            </Paper>
+          )}
+
+          {/* Show streaming analysis preview */}
+          {streamingAnalysis && (
+            <Box sx={{ mt: 2, width: '100%', maxWidth: 600 }}>
+              <Typography variant="caption" color="info.main">
+                Generating feedback...
+              </Typography>
+            </Box>
+          )}
         </Paper>
       )}
 
